@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 import re
 import locale
 import rule_engine
+from tzlocal import get_localzone
 
 # Setting locale to the 'local' value
 locale.setlocale(locale.LC_ALL, '')
@@ -220,10 +221,12 @@ class ExifTool(object):
             exit()
 
 class Rule:
+    src = None
     rule = None
     tags = {}
 
     def __init__(self, str):
+        src = str
         self.parse(str)
 
     def mapTag(self, s):
@@ -236,25 +239,34 @@ class Rule:
         return tags
 
     def parse(self, str):
-        when, then = unpack(str.split('=>'))
+        #print('Rule>> parsing:'+str)
+        when, *then = str.split('=>')
         if not then:
-            raise Exception('invalid rule: ' + str)
-        self.rule = rule_engine.Rule(when.strip())
+            raise Exception('Invalid rule: ' + str)
+        try:
+            self.rule = rule_engine.Rule(when.strip())
+        except rule_engine.EngineError as e:
+            print('Invalid rule: ' + e.message)
         self.tags = self.mapTags(then[0])
-
-def unpack(arg1, *rest):
-    return arg1, rest
 
 def resolveRules(rules, ctx, fmtStr):
     tags=[]
 
     str = fmtStr
     for r in rules:
-        if r.rule.matches(ctx):
-            tags = tags + r.tags
+        try:
+            if not r.rule is None and r.rule.matches(ctx):
+                tags = tags + r.tags
+        except rule_engine.AttributeResolutionError as e:
+            print('Rule attribute mismatch for attribute: ' + e.attribute_name)
+
     for tag in tags:
-        v = tag[1] if str.find(tag[0]) != -1 else ''
-        str = re.sub(r'.*(\%' + tag[0] + ').*', v, str)
+        v = tag[1] if str.find(tag[0]) != -1 else ' '
+        str = re.sub(r'\@' + tag[0] + '\@', v, str)
+    str = re.sub(r'\@.+\@', '', str)
+    #print('tags=')
+    #print(tags)
+    #print(fmtStr + ' resolved to ' + str)
     return str
 
 # ---------------------------------------
@@ -399,7 +411,18 @@ def sortPhotos(src_dir, dest_dir, sort_format, rename_format, recursive=False,
         ctx['fname'] = src_dir
         ctx['exif'] = {}
         for k in data.keys():
-            ctx['exif'][k.lower()] = data[key]
+            ctx_k = k.lower().replace(':', '_')
+            ctx['exif'][ctx_k] = data[k]
+            #print(ctx_k+'-'+data[k])
+            try:
+                ctx['exif'][ctx_k] = datetime.strptime(data[k], '%Y:%m:%d %H:%M:%S%z')
+            except ValueError as e:
+                try:
+                    tz = get_localzone()
+                    ctx['exif'][ctx_k] = tz.localize(datetime.strptime(data[k], '%Y:%m:%d %H:%M:%S'))
+                except ValueError as e:
+                    ctx['exif'][ctx_k] = data[k]
+        #print(ctx)
 
         # create folder structure
         dir_structure = date.strftime(sort_format)
