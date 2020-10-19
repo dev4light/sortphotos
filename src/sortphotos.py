@@ -22,12 +22,12 @@ import filecmp
 from datetime import datetime, timedelta
 import re
 import locale
+import rule_engine
 
 # Setting locale to the 'local' value
 locale.setlocale(locale.LC_ALL, '')
 
 exiftool_location = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'Image-ExifTool', 'exiftool')
-
 
 # -------- convenience methods -------------
 
@@ -219,15 +219,50 @@ class ExifTool(object):
             sys.stdout.write('No files to parse or invalid data\n')
             exit()
 
+class Rule:
+    rule = None
+    tags = {}
+
+    def __init__(self, str):
+        self.parse(str)
+
+    def mapTag(self, s):
+        k,v = s.split('=')
+        r = (k.strip(), v.strip())
+        return r
+
+    def mapTags(self, s):
+        tags = [self.mapTag(tag) for tag in s.split(',')]
+        return tags
+
+    def parse(self, str):
+        when, then = unpack(str.split('=>'))
+        if not then:
+            raise Exception('invalid rule: ' + str)
+        self.rule = rule_engine.Rule(when.strip())
+        self.tags = self.mapTags(then[0])
+
+def unpack(arg1, *rest):
+    return arg1, rest
+
+def resolveRules(rules, ctx, fmtStr):
+    tags=[]
+
+    str = fmtStr
+    for r in rules:
+        if r.rule.matches(ctx):
+            tags = tags + r.tags
+    for tag in tags:
+        v = tag[1] if str.find(tag[0]) != -1 else ''
+        str = re.sub(r'.*(\%' + tag[0] + ').*', v, str)
+    return str
 
 # ---------------------------------------
-
-
 
 def sortPhotos(src_dir, dest_dir, sort_format, rename_format, recursive=False,
         copy_files=False, test=False, remove_duplicates=True, day_begins=0,
         additional_groups_to_ignore=['File'], additional_tags_to_ignore=[],
-        use_only_groups=None, use_only_tags=None, verbose=True, keep_filename=False):
+        use_only_groups=None, use_only_tags=None, verbose=True, keep_filename=False, rules=[]):
     """
     This function is a convenience wrapper around ExifTool based on common usage scenarios for sortphotos.py
 
@@ -312,6 +347,9 @@ def sortPhotos(src_dir, dest_dir, sort_format, rename_format, recursive=False,
     if test:
         test_file_dict = {}
 
+    # parse rules
+    rules = [Rule(r) for r in rules]
+
     # parse output extracting oldest relevant date
     for idx, data in enumerate(metadata):
 
@@ -356,9 +394,16 @@ def sortPhotos(src_dir, dest_dir, sort_format, rename_format, recursive=False,
         # early morning photos can be grouped with previous day (depending on user setting)
         date = check_for_early_morning_photos(date, day_begins)
 
+        # create resolve context
+        ctx = {}
+        ctx['fname'] = src_dir
+        ctx['exif'] = {}
+        for k in data.keys():
+            ctx['exif'][k.lower()] = data[key]
 
         # create folder structure
         dir_structure = date.strftime(sort_format)
+        dir_structure = resolveRules(rules, ctx, dir_structure)
         dirs = dir_structure.split('/')
         dest_file = dest_dir
         for thedir in dirs:
@@ -418,18 +463,18 @@ def sortPhotos(src_dir, dest_dir, sort_format, rename_format, recursive=False,
 
 
         # finally move or copy the file
-        if test:
-            test_file_dict[dest_file] = src_file
+        # if test:
+        #     test_file_dict[dest_file] = src_file
 
-        else:
+        # else:
 
-            if fileIsIdentical:
-                continue  # ignore identical files
-            else:
-                if copy_files:
-                    shutil.copy2(src_file, dest_file)
-                else:
-                    shutil.move(src_file, dest_file)
+        #     if fileIsIdentical:
+        #         continue  # ignore identical files
+        #     else:
+        #         if copy_files:
+        #             shutil.copy2(src_file, dest_file)
+        #         else:
+        #             shutil.move(src_file, dest_file)
 
 
 
@@ -450,6 +495,7 @@ def main():
                                      description='Sort files (primarily photos and videos) into folders by date\nusing EXIF and other metadata')
     parser.add_argument('src_dir', type=str, help='source directory')
     parser.add_argument('dest_dir', type=str, help='destination directory')
+    parser.add_argument('-x', '--rule', action='append', required=False, help='add a rule to be used by sort/rename formats')
     parser.add_argument('-r', '--recursive', action='store_true', help='search src_dir recursively')
     parser.add_argument('-c', '--copy', action='store_true', help='copy files instead of move')
     parser.add_argument('-s', '--silent', action='store_true', help='don\'t display parsing details.')
@@ -496,7 +542,7 @@ def main():
     sortPhotos(args.src_dir, args.dest_dir, args.sort, args.rename, args.recursive,
         args.copy, args.test, not args.keep_duplicates, args.day_begins,
         args.ignore_groups, args.ignore_tags, args.use_only_groups,
-        args.use_only_tags, not args.silent, args.keep_filename)
+        args.use_only_tags, not args.silent, args.keep_filename, args.rule)
 
 if __name__ == '__main__':
     main()
